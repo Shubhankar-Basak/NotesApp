@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp-Style Notes</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the mobile-like screen and textarea */
+        .notes-app-container {
+            height: 100vh;
+            width: 100%;
+            max-width: 500px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            position: relative; 
+        }
+        
+        /* Ensure the body takes full height for the center effect */
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f2f5; /* Light background for context */
+            font-family: 'Inter', sans-serif;
+        }
+
+        .note-list-item:hover {
+            background-color: #f5f5f5;
+        }
+
+        /* Utility to ensure the back button looks good */
+        .back-button-svg {
+            transform: scale(1.1);
+        }
+
+        /* ------------------------------------------------------------------ */
+        /* --- SCROLLBAR HIDING STYLES --- (New addition for "pro" look)    */
+        /* ------------------------------------------------------------------ */
+        
+        /* Hide scrollbar for Chrome, Safari and Opera */
+        #note-list-scroll-container::-webkit-scrollbar, 
+        .editor-textarea::-webkit-scrollbar {
+            display: none;
+        }
+
+        /* Hide scrollbar for IE, Edge */
+        #note-list-scroll-container,
+        .editor-textarea {
+            -ms-overflow-style: none;  /* IE and Edge */
+            scrollbar-width: none;     /* Firefox */
+        }
+        
+        /* ------------------------------------------------------------------ */
+
+        /* Custom style for the list scroll container to fix sticky search bar */
+        #note-list-scroll-container {
+            position: relative;
+            /* Enable momentum scrolling for a native mobile feel */
+            -webkit-overflow-scrolling: touch; 
+        }
+
+        /* Custom style for the editor textarea */
+        .editor-textarea {
+            min-height: calc(100vh - 180px); 
+            font-family: 'Inter', sans-serif;
+            /* Enable momentum scrolling for a native mobile feel */
+            -webkit-overflow-scrolling: touch; 
+        }
+    </style>
+</head>
+<body>
+
+<div id="app" class="notes-app-container bg-white flex flex-col">
+    <!-- App content will be rendered here -->
+</div>
+
+<!-- Custom Modal for Confirmation/Alerts -->
+<div id="modal-backdrop" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+    <div id="modal-content" class="bg-white p-6 rounded-lg shadow-2xl w-11/12 max-w-sm">
+        <p id="modal-message" class="text-gray-800 text-lg mb-4"></p>
+        <div class="flex justify-end space-x-3">
+            <button id="modal-cancel" class="px-4 py-2 text-sm font-medium text-gray-600 bg-gray-200 rounded-full hover:bg-gray-300 transition">
+                Cancel
+            </button>
+            <button id="modal-confirm" class="px-4 py-2 text-sm font-medium text-white bg-green-500 rounded-full hover:bg-green-600 transition">
+                Confirm
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // --- STATE MANAGEMENT ---
+    let notes = [];
+    let currentView = 'list'; // 'list' or 'editor'
+    let editingNote = null; // null for new note, object for existing
+    let searchTerm = ''; // State for search filtering
+    let isMenuOpen = false; // State for menu visibility
+    let isSelectMode = false; // New state for bulk selection mode
+    let selectedNoteIds = new Set(); // Stores IDs of selected notes
+    const STORAGE_KEY = 'whatsapp_notes_data';
+    
+    // --- LOCAL STORAGE UTILITIES ---
+
+    const loadNotes = () => {
+        const storedNotes = localStorage.getItem(STORAGE_KEY);
+        try {
+            notes = storedNotes ? JSON.parse(storedNotes) : [];
+            // Ensure notes are sorted by updated timestamp
+            notes.sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+        } catch (e) {
+            console.error("Error loading notes from localStorage:", e);
+            notes = [];
+        }
+    };
+
+    const saveNotesToLocalStorage = () => {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+        } catch (e) {
+            console.error("Error saving notes to localStorage:", e);
+        }
+    };
+
+    const handleSaveNote = (title, content, noteId) => {
+        const trimmedTitle = title.trim() || 'Untitled Note';
+        const trimmedContent = content.trim();
+
+        if (!trimmedContent && !trimmedTitle) {
+            showCustomModal("Cannot save an empty note.", false);
+            return;
+        }
+        
+        const now = Date.now();
+        
+        if (noteId) {
+            const index = notes.findIndex(note => note.id === noteId);
+            if (index !== -1) {
+                notes[index] = {
+                    ...notes[index],
+                    title: trimmedTitle,
+                    content: trimmedContent,
+                    updatedAt: now,
+                };
+            }
+        } else {
+            const newNote = {
+                id: crypto.randomUUID(),
+                title: trimmedTitle,
+                content: trimmedContent,
+                createdAt: now,
+                updatedAt: now,
+            };
+            notes.unshift(newNote); 
+        }
+
+        saveNotesToLocalStorage();
+        editingNote = null;
+        currentView = 'list';
+        renderApp();
+    };
+
+    const handleDeleteNote = (noteId) => {
+        notes = notes.filter(note => note.id !== noteId);
+        saveNotesToLocalStorage();
+        editingNote = null;
+        currentView = 'list';
+        renderApp();
+    };
+
+    // --- CUSTOM MODAL IMPLEMENTATION ---
+    const modalBackdrop = document.getElementById('modal-backdrop');
+    const modalMessage = document.getElementById('modal-message');
+    const modalConfirmButton = document.getElementById('modal-confirm');
+    const modalCancelButton = document.getElementById('modal-cancel');
+    let resolveModal;
+
+    const showCustomModal = (message, isConfirm = true) => {
+        modalMessage.textContent = message;
+        modalConfirmButton.textContent = isConfirm ? 'Confirm' : 'OK';
+        modalCancelButton.classList.toggle('hidden', !isConfirm);
+        
+        modalBackdrop.classList.remove('hidden');
+        modalBackdrop.classList.add('flex');
+
+        modalConfirmButton.onclick = () => {
+            modalBackdrop.classList.add('hidden');
+            modalBackdrop.classList.remove('flex');
+            if (isConfirm) resolveModal(true);
+        };
+
+        if (isConfirm) {
+            return new Promise(resolve => {
+                resolveModal = resolve;
+                modalCancelButton.onclick = () => {
+                    modalBackdrop.classList.add('hidden');
+                    modalBackdrop.classList.remove('flex');
+                    resolve(false);
+                };
+            });
+        }
+    };
+
+    // --- VIEW SWITCHING & SELECT MODE HANDLERS ---
+    
+    const handleSelectNote = (note) => {
+        isMenuOpen = false;
+        editingNote = note;
+        currentView = 'editor';
+        renderApp();
+    };
+
+    const handleNewNote = () => {
+        isMenuOpen = false;
+        editingNote = null;
+        currentView = 'editor';
+        renderApp();
+    };
+
+    const handleToggleMenu = () => {
+        isMenuOpen = !isMenuOpen;
+        renderApp();
+    };
+
+    const toggleSelectMode = () => {
+        isMenuOpen = false; // Ensure menu closes
+        isSelectMode = !isSelectMode;
+        selectedNoteIds.clear(); // Clear selection when toggling mode
+        renderApp();
+    };
+    
+    const handleBulkDelete = async () => {
+        if (selectedNoteIds.size === 0) {
+            showCustomModal("Please select notes to delete.", false);
+            return;
+        }
+        const confirmed = await showCustomModal(`Are you sure you want to delete ${selectedNoteIds.size} selected note(s)?`, true);
+        if (confirmed) {
+            notes = notes.filter(note => !selectedNoteIds.has(note.id));
+            saveNotesToLocalStorage();
+            isSelectMode = false; // Exit mode after deletion
+            selectedNoteIds.clear();
+            renderApp();
+        }
+    };
+
+    const handleBackToList = async (title, content) => {
+        const isNewNote = !editingNote;
+        
+        // Check for modifications if it's an existing note, or if content exists for a new note
+        const isContentModified = !isNewNote && (title !== editingNote.title || content !== editingNote.content);
+        const isNewNoteContent = isNewNote && (title.trim() !== '' || content.trim() !== '');
+
+        if (isContentModified || isNewNoteContent) {
+            const confirmed = await showCustomModal("Discard unsaved changes?", true);
+            if (!confirmed) {
+                return; // Stay on editor screen
+            }
+        }
+        
+        editingNote = null;
+        currentView = 'list';
+        renderApp();
+    };
+    
+    // --- FORMATTING UTILITIES ---
+
+    const formatTimestamp = (timestamp) => {
+        if (!timestamp) return '...';
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffInMinutes = (now - date) / (1000 * 60);
+
+        if (diffInMinutes < 60) {
+            return `${Math.floor(diffInMinutes)}m ago`;
+        }
+        if (diffInMinutes < 24 * 60) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        }
+        return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    };
+
+    const filterNotes = (notes, term) => {
+        const lowerTerm = term.toLowerCase();
+        if (!lowerTerm) return notes;
+        
+        return notes.filter(note => 
+            note.title.toLowerCase().includes(lowerTerm) ||
+            note.content.toLowerCase().includes(lowerTerm)
+        );
+    };
+
+
+    // --- RENDERING COMPONENTS ---
+
+    const NoteListItem = (note) => {
+        const snippet = (note.content || '').substring(0, 50) + (note.content.length > 50 ? '...' : '');
+        const initial = note.title ? note.title[0].toUpperCase() : 'N';
+        const isSelected = selectedNoteIds.has(note.id);
+        const formattedDate = formatTimestamp(note.updatedAt || note.createdAt);
+
+        // Icon/Checkbox based on mode
+        const leftIcon = isSelectMode ? 
+            `<input type="checkbox" data-id="${note.id}" ${isSelected ? 'checked' : ''} 
+                    class="select-checkbox flex-shrink-0 w-6 h-6 text-green-600 bg-gray-100 border-gray-300 rounded focus:ring-green-500 mr-4 cursor-pointer">` :
+            `<div class="flex-shrink-0 w-12 h-12 bg-green-500 rounded-full flex items-center justify-center text-white text-xl font-bold mr-4 shadow-md">
+                ${initial}
+            </div>`;
+
+        return `
+            <div 
+                data-id="${note.id}"
+                class="note-list-item flex items-center p-3 border-b border-gray-100 transition duration-150 cursor-pointer shadow-sm ${isSelected ? 'bg-green-50 ring-2 ring-green-500' : ''}"
+            >
+                ${leftIcon}
+                <div class="flex-grow min-w-0">
+                    <div class="flex justify-between items-center">
+                        <p class="text-lg font-semibold text-gray-800 truncate">${note.title}</p>
+                        <span class="text-xs text-gray-500">
+                            ${formattedDate}
+                        </span>
+                    </div>
+                    <p class="text-sm text-gray-500 truncate mt-0.5">
+                        ${snippet || '<span class="italic">Empty note</span>'}
+                    </p>
+                </div>
+            </div>
+        `;
+    };
+    
+    // Renders ONLY the dynamic list content (Fix for search focus issue)
+    const renderNoteListContent = () => {
+        loadNotes();
+        const filteredNotes = filterNotes(notes, searchTerm);
+        let listContent = filteredNotes.map(NoteListItem).join('');
+
+        if (filteredNotes.length === 0) {
+            listContent = `
+                <div class="flex flex-col items-center justify-center p-8 text-center text-gray-500 flex-grow">
+                    <svg class="w-16 h-16 text-green-300 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                    <p class="text-lg font-medium">${searchTerm ? 'No matching notes found.' : 'No notes found.'}</p>
+                    ${!searchTerm ? '<p class="text-sm">Tap the green button or menu to start a new note!</p>' : ''}
+                </div>
+            `;
+        }
+
+        const listDiv = document.getElementById('note-list-content');
+        if (listDiv) {
+            listDiv.innerHTML = listContent;
+            // Re-attach appropriate listeners
+            if (isSelectMode) {
+                attachSelectionListeners();
+            } else {
+                attachNoteClickListeners();
+            }
+        }
+        
+        // Ensure FAB visibility is correct after rendering
+        const fab = document.getElementById('fab-new-note');
+        if (fab) {
+            fab.classList.toggle('hidden', isSelectMode);
+        }
+    };
+
+
+    const NoteListScreen = () => {
+        // --- Conditional Header Content ---
+        let headerContent;
+        if (isSelectMode) {
+            const selectedCount = selectedNoteIds.size;
+            headerContent = `
+                <div class="flex justify-between items-center">
+                    <button id="cancel-select-mode" class="p-2 rounded-full hover:bg-green-700 transition" title="Cancel Selection">
+                        <!-- Close/X Icon -->
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                    <h1 class="text-xl font-semibold">${selectedCount} Selected</h1>
+                    <button id="bulk-delete-button" class="p-2 rounded-full hover:bg-red-500 transition disabled:opacity-50" title="Delete Selected" ${selectedNoteIds.size === 0 ? 'disabled' : ''}>
+                        <!-- Trash Icon -->
+                        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd"></path></svg>
+                    </button>
+                </div>
+            `;
+        } else {
+            // Original header content
+            const appDescription = "This is a simple, fast mobile-style notes application designed for quick capture and easy access. Create new notes, save your thoughts with titles, and quickly find any note using the built-in search bar.";
+            headerContent = `
+                <div class="flex justify-between items-center">
+                    <h1 class="text-2xl font-semibold">NotesApp</h1>
+                    <div class="relative">
+                        <button id="menu-button" class="p-2 rounded-full hover:bg-green-700 transition" title="Menu">
+                            <!-- Vertical Dots Icon (Menu) -->
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path d="M10 6a1 1 0 100-2 1 1 0 000 2zm0 4a1 1 0 100-2 1 1 0 000 2zm0 4a1 1 0 100-2 1 1 0 000 2z"></path></svg>
+                        </button>
+                        
+                        <!-- Dropdown Menu -->
+                        <div id="menu-dropdown" class="${isMenuOpen ? '' : 'hidden'} absolute right-0 mt-2 w-48 bg-white rounded-md shadow-xl py-1 text-gray-800 z-50">
+                            <a href="#" id="menu-new-note" class="block px-4 py-2 text-sm hover:bg-gray-100">New Note</a>
+                            <a href="#" id="menu-select-notes" class="block px-4 py-2 text-sm hover:bg-gray-100">Select Notes</a>
+                            <div class="border-t border-gray-100"></div>
+                            <a href="#" onclick="showCustomModal('${appDescription}', false)" class="block px-4 py-2 text-sm hover:bg-gray-100">About</a>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        return `
+            <div class="h-full flex flex-col relative">
+                <!-- Main Header (Green, Sticky Top 0) -->
+                <header class="bg-green-600 text-white p-4 shadow-md sticky top-0 z-20">
+                    ${headerContent}
+                </header>
+                
+                <!-- Scrollable Container for Search and List Content -->
+                <div id="note-list-scroll-container" class="flex-grow overflow-y-auto bg-white">
+                    <!-- Search Bar - White capsule fix -->
+                    <div class="p-3 bg-white border-b border-gray-100 sticky top-0 z-10 shadow-sm">
+                        <div class="relative">
+                            <input
+                                id="search-input"
+                                type="text"
+                                placeholder="Search notes..."
+                                value="${searchTerm}"
+                                class="w-full py-2 pl-10 pr-4 text-sm bg-gray-100 text-gray-800 placeholder-gray-500 rounded-full focus:outline-none focus:ring-2 focus:ring-green-500 transition"
+                            />
+                            <!-- Search Icon -->
+                            <svg class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"></path></svg>
+                        </div>
+                    </div>
+
+                    <!-- Note List Content - Rendered separately for search fix -->
+                    <div id="note-list-content">
+                        <!-- Content will be injected here by renderNoteListContent() -->
+                    </div>
+                </div>
+
+                <!-- Floating Action Button (FAB) - Fixed position to Absolute within the app container -->
+                <button
+                    id="fab-new-note"
+                    class="absolute bottom-6 right-6 w-14 h-14 bg-green-500 text-white rounded-full shadow-xl flex items-center justify-center text-3xl hover:bg-green-700 transition duration-300 z-30 focus:outline-none focus:ring-4 focus:ring-green-300 ${isSelectMode ? 'hidden' : ''}"
+                    title="New Note"
+                >
+                    +
+                </button>
+            </div>
+        `;
+    };
+
+    const NoteEditorScreen = (note) => {
+        const isNewNote = !note;
+        const titlePlaceholder = isNewNote ? "New Note Title (e.g., Shopping List)" : "Note Title";
+        const titleValue = note?.title || '';
+        const contentValue = note?.content || '';
+
+        return `
+            <div class="h-full flex flex-col bg-gray-100">
+                <!-- Header: Back | Note | Save -->
+                <header class="bg-green-600 text-white p-4 shadow-md flex items-center justify-between sticky top-0 z-20">
+                    <button 
+                        id="back-button"
+                        class="p-1 mr-3 rounded-full hover:bg-green-700 transition"
+                        title="Back to Notes List"
+                    >
+                        <!-- Back Arrow Icon -->
+                        <svg class="w-6 h-6 back-button-svg" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                    </button>
+                    
+                    <h2 class="text-xl font-semibold">Note</h2>
+
+                    <button
+                        id="save-button-header"
+                        class="px-4 py-1.5 text-sm text-white font-semibold rounded-full transition duration-150 shadow-md bg-green-500 hover:bg-green-700 active:bg-green-800"
+                    >
+                        ${isNewNote ? 'Create' : 'Save'}
+                    </button>
+                </header>
+
+                <!-- Scrollable Content Area: Title and Content -->
+                <div class="flex-grow overflow-y-auto">
+                    <!-- Title Input (below header, separate line) -->
+                    <div class="p-4 bg-white border-b border-gray-200 shadow-sm">
+                        <input
+                            id="note-title-input"
+                            type="text"
+                            placeholder="${titlePlaceholder}"
+                            value="${titleValue.replace(/"/g, '&quot;')}"
+                            class="w-full text-xl font-semibold text-gray-800 placeholder-gray-400 focus:outline-none focus:ring-0"
+                            maxlength="100"
+                        />
+                    </div>
+                    
+                    <!-- Content Area (entire notes) -->
+                    <div class="p-4 bg-gray-100 min-h-full">
+                        <textarea
+                            id="note-content-input"
+                            placeholder="Start typing your note here... (like a long chat thread)"
+                            class="editor-textarea w-full text-gray-800 text-base resize-none focus:outline-none bg-white rounded-lg p-3 shadow-inner"
+                        >${contentValue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
+                    </div>
+                </div>
+
+                <!-- Delete Button in Footer (if exists) -->
+                ${!isNewNote ? `
+                    <div class="bg-white border-t border-gray-200 p-2 shadow-inner flex items-center justify-start">
+                        <button
+                            id="delete-button"
+                            class="px-4 py-2 bg-red-500 text-white font-medium rounded-full hover:bg-red-700 transition duration-150 shadow-md active:bg-red-800"
+                        >
+                            Delete
+                        </button>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    };
+
+
+    // --- EVENT LISTENERS ATTACHMENT ---
+    
+    // Attaches listeners for opening the editor (when not in select mode)
+    const attachNoteClickListeners = () => {
+        document.querySelectorAll('.note-list-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const noteId = item.getAttribute('data-id');
+                const note = notes.find(n => n.id === noteId);
+                if (note) {
+                    handleSelectNote(note);
+                }
+            });
+        });
+    };
+    
+    // Attaches listeners for selection mode checkboxes
+    const attachSelectionListeners = () => {
+        document.querySelectorAll('.note-list-item').forEach(listItem => {
+            const checkbox = listItem.querySelector('.select-checkbox');
+            const noteId = listItem.getAttribute('data-id');
+            
+            // Function to handle the selection state change
+            const toggleSelection = (id, checked) => {
+                if (checked) {
+                    selectedNoteIds.add(id);
+                } else {
+                    selectedNoteIds.delete(id);
+                }
+                // Re-render the app to update the header count and item styling
+                renderApp(); 
+            };
+
+            // Attach listener to the checkbox
+            checkbox.addEventListener('click', (e) => {
+                e.stopPropagation(); // Prevent list item click from firing if we click the box directly
+                toggleSelection(noteId, checkbox.checked);
+            });
+
+            // Attach listener to the list item itself to toggle the checkbox on general tap
+            listItem.addEventListener('click', () => {
+                checkbox.checked = !checkbox.checked;
+                toggleSelection(noteId, checkbox.checked);
+            });
+        });
+    };
+
+    const attachListListeners = () => {
+        // Attach listener for FAB
+        document.getElementById('fab-new-note')?.addEventListener('click', handleNewNote);
+        
+        // Attach listener for Menu Button
+        document.getElementById('menu-button')?.addEventListener('click', handleToggleMenu);
+
+        // Attach listener for New Note menu item
+        document.getElementById('menu-new-note')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            handleNewNote();
+        });
+        
+        // Attach listener for Select Notes menu item (New functionality)
+        document.getElementById('menu-select-notes')?.addEventListener('click', (e) => {
+            e.preventDefault();
+            toggleSelectMode();
+        });
+
+        // Attach listener for search input (FIX: Renders only list content)
+        // Store current cursor position before re-rendering
+        const searchInput = document.getElementById('search-input');
+        const currentCursorPosition = searchInput ? searchInput.selectionStart : 0;
+        
+        searchInput?.addEventListener('input', (e) => {
+            searchTerm = e.target.value;
+            // Get the current cursor position before calling the render function
+            const cursorPosition = e.target.selectionStart; 
+            
+            // This flag is needed because renderNoteListContent doesn't re-render the input element itself
+            renderNoteListContent(); 
+            
+            // Restore the focus and cursor position after DOM update
+            requestAnimationFrame(() => {
+                const updatedSearchInput = document.getElementById('search-input');
+                if (updatedSearchInput) {
+                    updatedSearchInput.focus();
+                    updatedSearchInput.setSelectionRange(cursorPosition, cursorPosition);
+                }
+            });
+        });
+        
+        // Listeners for Select Mode Header
+        document.getElementById('cancel-select-mode')?.addEventListener('click', toggleSelectMode);
+        document.getElementById('bulk-delete-button')?.addEventListener('click', handleBulkDelete);
+
+        // Close menu if clicking outside (list container)
+        document.getElementById('note-list-scroll-container')?.addEventListener('click', (e) => {
+            if (isMenuOpen && !e.target.closest('#menu-button')) {
+                isMenuOpen = false;
+                renderApp();
+            }
+        });
+        
+        // Initial rendering of note items and attachment of listeners
+        renderNoteListContent();
+    };
+    
+    const attachEditorListeners = () => {
+        const titleInput = document.getElementById('note-title-input');
+        const contentInput = document.getElementById('note-content-input');
+        const saveButton = document.getElementById('save-button-header');
+        const deleteButton = document.getElementById('delete-button');
+        const backButton = document.getElementById('back-button');
+
+        // Back button handler (handles unsaved changes confirmation)
+        backButton.addEventListener('click', () => {
+            handleBackToList(titleInput.value, contentInput.value);
+        });
+
+        // Save button handler
+        if (saveButton) { 
+            saveButton.addEventListener('click', () => {
+                handleSaveNote(titleInput.value, contentInput.value, editingNote?.id);
+            });
+        }
+
+        // Delete button handler (only present for existing notes)
+        if (deleteButton) {
+            deleteButton.addEventListener('click', async () => {
+                const confirmed = await showCustomModal("Are you sure you want to delete this note?", true);
+                if (confirmed) {
+                    handleDeleteNote(editingNote.id);
+                }
+            });
+        }
+    };
+
+
+    // --- MAIN RENDER LOOP ---
+
+    const renderApp = () => {
+        const appContainer = document.getElementById('app');
+        
+        if (currentView === 'list') {
+            appContainer.innerHTML = NoteListScreen();
+            setTimeout(attachListListeners, 0); 
+        } else if (currentView === 'editor') {
+            appContainer.innerHTML = NoteEditorScreen(editingNote);
+            setTimeout(attachEditorListeners, 0);
+        }
+    };
+
+    // --- INITIALIZATION ---
+    document.addEventListener('DOMContentLoaded', () => {
+        renderApp();
+    });
+
+</script>
+
+</body>
+</html>
