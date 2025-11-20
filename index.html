@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp-Style Notes</title>
+    <title>NotesApp</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         /* Custom styles for the mobile-like screen and textarea */
@@ -451,7 +451,7 @@
 
     const NoteEditorScreen = (note) => {
         const isNewNote = !note;
-        const titlePlaceholder = isNewNote ? "New Note Title (e.g., Shopping List)" : "Note Title";
+        const titlePlaceholder = isNewNote ? "Enter Title..." : "Note Title";
         const titleValue = note?.title || '';
         const contentValue = note?.content || '';
 
@@ -496,7 +496,7 @@
                     <div class="p-4 bg-gray-100 min-h-full">
                         <textarea
                             id="note-content-input"
-                            placeholder="Start typing your note here... (like a long chat thread)"
+                            placeholder="Start typing your note here..."
                             class="editor-textarea w-full text-gray-800 text-base resize-none focus:outline-none bg-white rounded-lg p-3 shadow-inner"
                         >${contentValue.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</textarea>
                     </div>
