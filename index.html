@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NotesApp</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="manifest" href="/NotesApp/manifest.json">
+<script>
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/NotesApp/sw.js');
+  }
+</script>
     <style>
         /* Custom styles for the mobile-like screen and textarea */
         .notes-app-container {
